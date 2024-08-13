@@ -361,7 +361,7 @@ To flash the bitstream onto the FPGA using `opentitantool`, use the following co
 **If you downloaded the bitstream from the Internet:**
 ```sh
 cd $REPO_TOP
-./bazelisk.sh run //sw/host/opentitantool -- fpga load-bitstream /tmp/bitstream-latest/lowrisc_systems_chip_earlgrey_${BOARD}_0.1.bit.orig
+./bazelisk.sh run //sw/host/opentitantool -- fpga load-bitstream /tmp/bitstream-latest/chip_earlgrey_${BOARD}/lowrisc_systems_chip_earlgrey_${BOARD}_0.1.bit
 ```
 **if you built the bitstream yourself:**
 ```sh
