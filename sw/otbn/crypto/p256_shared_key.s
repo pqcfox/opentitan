@@ -59,7 +59,7 @@ p256_shared_key:
 
   /* Call internal scalar multiplication routine.
      Returns point in projective coordinates.
-     R = (x, y, z) = (w8, w9, w10) <= k*P = w0*P */
+     R = (x, y, z) = (w8, w9, w10) <= d*P = ([w0, w1] + [w2, w3])*P */
   la        x21, x
   la        x22, y
   jal       x1, scalar_mult_int
@@ -167,45 +167,47 @@ p256_shared_key:
 arithmetic_to_boolean_mod:
   /* First step: calculate A2B from reduced values. */
 
-  /* Save inputs for second A2B execution.
-     w24 <= w19 = r
-     w25 <= w11 = A */
-  bn.mov    w24, w19
-  bn.mov    w25, w11
+  /* Save inputs for second A2B execution. Also, expand inputs r and A (w19
+     and w11) to 257-bit values [w19,w18] and [w12,w11] and prepare input for
+     257-bit A2B function.
 
-  /* Expand inputs r and A (w19 and w11) to 257-bit values [w19,w18]
-     and [w12,w11] and prepare input for 257-bit A2B function.
+     w24 <= w19 = r
+     w25 <= w11 = A
      w18 <= w19
      w19 <= w31
      w11 <= w11 -> obsolete
      w12 <= w31 */
   bn.mov    w18, w19
-  bn.mov    w19, w31
+  bn.mov    w24, w19
   bn.mov    w12, w31
+  bn.mov    w25, w11  /* separated from bn.mov w24, w19 to prevent transient
+                         side channel leak */
+  bn.mov    w19, w31
 
   /* Call 257-bit A2B function.
      [w21,w20] <= x' */
   jal       x1, arithmetic_to_boolean
 
-  /* Save intermediate result of reduced inputs.
+  /* Save intermediate result of reduced inputs. Also, restore and expand inputs
+     r and A (w19 and w11) to 257-bit values [w19,w18] and [w12,w11] and prepare
+     input for 257-bit A2B function.
+
      w26 <= w20 = x' (lower part)
-     w27 <= w21 = x' (upper part) */
-  bn.mov    w26, w20
-  bn.mov    w27, w21
-
-  /* Second step: calculate A2B from unreduced values. */
-
-  /* Restore and expand inputs r and A (w19 and w11) to 257-bit
-     values [w19,w18] and [w12,w11] and prepare input for
-     257-bit A2B function.
+     w27 <= w21 = x' (upper part)
      w18 <= w24
      w19 <= w31
      w11 <= w25
      w12 <= w31 */
+  bn.mov    w26, w20
   bn.mov    w18, w24
+  bn.mov    w27, w21  /* separated from bn.mov w26, w20 to prevent transient
+                         side channel leak */
   bn.mov    w19, w31
-  bn.mov    w11, w25
+  bn.mov    w11, w25  /* separated from bn.mov w18, w24 to prevent transient
+                         side channel leak */
   bn.mov    w12, w31
+
+  /* Second step: calculate A2B from unreduced values. */
 
   /* Get field modulus p.
      w29 <= MOD() */
@@ -221,6 +223,7 @@ arithmetic_to_boolean_mod:
   bn.addi   w12, w12, 0x2
   bn.sub    w11, w11, w29
   bn.subb   w12, w12, w31
+  bn.sub    w22, w22, w22  /* dummy instruction to clear flags */
 
   /* Call 257-bit A2B function.
      [w21,w20] <= x' */
@@ -231,13 +234,20 @@ arithmetic_to_boolean_mod:
      w19 <= w24 */
   bn.mov    w19, w24
 
-  /* Check MSB (carry bit) of second A2B result for true or false. */
-  bn.cmp    w21, w31 /* w21 can only be 0x1 or 0x0 */
+  /* Move reduced A2B computation result to a separate register to prevent
+     below bn.sel leaking FG0.Z. */
+  bn.mov    w31, w31  /* dummy instruction to separate bn.mov w25, w20 from
+                         bn.mov w19, w24 to avoid transient leakage */
+  bn.mov    w25, w20
+
+  /* Check MSb (carry bit) of second A2B result for true or false. */
+  bn.cmp    w21, w31  /* w21 can only be 0x1 or 0x0 */
 
   /* Return the unreduced A2B computation (second result),
      if zero flag is set, otherwise return the reduced
      A2B computation (first result). */
-  bn.sel    w20, w20, w26, FG0.Z
+  bn.sel    w20, w25, w26, FG0.Z
+  bn.sel    w31, w31, w31, FG0.Z  /* dummy instruction to conceal FG0.Z */
 
   ret
 
@@ -274,17 +284,17 @@ arithmetic_to_boolean_mod:
  */
 arithmetic_to_boolean:
   /* Initialize inputs: in case of randomness in upper part of inputs
-     truncate to 257 bits. */
+     truncate to 257 bits. Also, fetch 257 bits of randomness.
+
+     [w2,w1] = gamma    <= URND */
   bn.rshi   w19, w19, w31 >> 1
   bn.rshi   w19, w31, w19 >> 255
-  bn.rshi   w12, w12, w31 >> 1
-  bn.rshi   w12, w31, w12 >> 255
-
-  /* Fetch 257 bits of randomness.
-     [w2,w1] = gamma    <= URND */
   bn.wsrr   w1, URND
   bn.wsrr   w2, URND
   bn.rshi   w2, w31, w2 >> 255
+  bn.rshi   w12, w12, w31 >> 1  /* separated from bn.rshi w19, w31, w19 >> 25 to
+                                   prevent transient side channel leak */
+  bn.rshi   w12, w31, w12 >> 255
 
   /* Double gamma and truncate to 257 bits.
      [w4,w3] = T        <= 2 * [w2,w1] = 2 * gamma */
@@ -296,6 +306,7 @@ arithmetic_to_boolean:
   /* [w21,w20] = x'     <= [w2,w1] ^ [w19,w18] = gamma ^ r */
   bn.xor    w20, w1, w18
   bn.xor    w21, w2, w19
+  bn.xor    w5, w5, w5  /* dummy instruction to clear flags */
 
   /* [w6,w5] = omega    <= [w2,w1] & [w21,w20] = gamma & x' */
   bn.and    w5, w1, w20
@@ -354,5 +365,6 @@ arithmetic_to_boolean:
   /* [w21,w20] = x'     <= [w21,w20] ^ [w4,w3] = x' ^ T */
   bn.xor    w20, w20, w3
   bn.xor    w21, w21, w4
+  bn.xor    w5, w5, w5  /* dummy instruction to clear flags */
 
   ret
