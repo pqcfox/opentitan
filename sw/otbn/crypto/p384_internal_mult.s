@@ -50,11 +50,16 @@ store_proj_randomize:
   bn.rshi   w3, w31, w3 >> 128
 
   /* reduce random number
+
+     N.B. The dummy instruciton below clears flags which may reveal information
+     regarding the random number used to randomize the projective coordinates.
+
      [w2, w3] = z <= [w2, w3] mod p */
   bn.sub   w10, w2, w12
   bn.subb  w11, w3, w13
   bn.sel   w2, w2, w10, C
   bn.sel   w3, w3, w11, C
+  bn.sub   w31, w31, w31  /* dummy instruction to clear flags */
 
   bn.mov w10, w2
   bn.mov w11, w3
@@ -167,13 +172,6 @@ store_proj_randomize:
  .globl scalar_mult_int_p384
 scalar_mult_int_p384:
 
-  /* set regfile pointers to in/out regs of Barrett routine. Set here to avoid
-     resetting in very call to point addition routine */
-  li        x22, 10
-  li        x23, 11
-  li        x24, 16
-  li        x25, 17
-
   /* fetch 1st share of scalar from dmem
      s0 = [w1, w0] <= dmem[dptr_k0] = [dmem[x17], dmem[x17+32]] = k0 */
   li        x2, 0
@@ -181,13 +179,26 @@ scalar_mult_int_p384:
   bn.lid    x2++, 32(x17)
 
   /* fetch 2nd share of scalar from dmem
-     s0 = [w3, w2] <= dmem[dptr_k1] = [dmem[x19], dmem[x19+32]] = k1 */
+     s1 = [w3, w2] <= dmem[dptr_k1] = [dmem[x19], dmem[x19+32]] = k1 */
   bn.lid    x2++, 0(x19)
   bn.lid    x2++, 32(x19)
 
-  /* left align both shares for probing of MSB in loop body */
+  /* left align first share for probing of MSB in loop body 
+
+     N.B. These instructions are purposely separated from the alignment of
+     the second share below to prevent transient side channel leaks in the ALU
+     datapath. */
   bn.rshi   w1, w1, w0 >> 192
   bn.rshi   w0, w0, w31 >> 192
+
+  /* set regfile pointers to in/out regs of Barrett routine. Set here to avoid
+     resetting in very call to point addition routine */
+  li        x22, 10
+  li        x23, 11
+  li        x24, 16
+  li        x25, 17
+
+  /* left align second share for probing of MSB in loop body */
   bn.rshi   w3, w3, w2 >> 192
   bn.rshi   w2, w2, w31 >> 192
 
@@ -209,7 +220,7 @@ scalar_mult_int_p384:
   add       x26, x30, x0
   jal       x1, proj_add_p384
 
-  /* store point 2P in scratchpad @w30+256
+  /* store point 2P in scratchpad @x30+256
      dmem[dptr_sc+256] = [w30:w25] = 2P */
   li        x2, 25
   bn.sid    x2++, 256(x30)
@@ -232,12 +243,22 @@ scalar_mult_int_p384:
   bn.sid    x2, 160(x26)
 
   /* double-and-add loop with decreasing index */
-  loopi     448, 85
+  loopi     448, 94
 
     /* double point Q
        Q = ([w30,w29], [w28,w27], [w26, w25]) <= Q + dmem[x27] */
     add       x27, x26, x0
     jal       x1, proj_add_p384
+
+    /* Prepare a mostly-randomized word with LSb matching the MSb of s0 for
+       performing a MSb check on s0 and s1 after the following call.
+      
+       N.B. This has been intentionally separated from the fetch of s1 in order
+       to prevent transient side channel leaks. */
+    li        x2, 0
+    bn.lid    x2++, 224(x30)
+    bn.wsrr   w8, URND
+    bn.rshi   w7, w8, w0 >> 255
 
     /* store Q in dmem
      dmem[x26] = dmem[dptr_sc+512] <= [w30:w25] */
@@ -254,15 +275,15 @@ scalar_mult_int_p384:
        If only one MSb is set, select P for addition.
        If both MSbs are set, select 2P for addition.
        (If neither MSB is set, 2P will be selected but result discarded.) */
-    li        x2, 0
-    bn.lid    x2++, 224(x30)
     bn.lid    x2, 480(x30)
-    bn.xor    w8, w0, w1
+    bn.xor    w8, w7, w1
+
     /* Create conditional offeset into scratchpad.
        if (s0[512] xor s1[512]) x27 <= x30 else x27 <= x30+256 */
     csrrs     x3, FG0, x0
+    bn.xor    w31, w31, w31  /* dummy instruction to clear flags */
     xori      x3, x3, -1
-    andi      x3, x3, 2
+    andi      x3, x3, 4      /* bit 2 of FG0: L flag */
     slli      x27, x3, 7
     add       x27, x27, x30
 
@@ -274,7 +295,8 @@ scalar_mult_int_p384:
        Q_a = ([w30,w29], [w28,w27], [w26, w25]) <= Q + dmem[x27] */
     jal       x1, proj_add_p384
 
-    /* load shares from scratchpad
+      /* load s0, s1 from scratchpad 
+
        [w1, w0] = s0; [w3, w2] = s1 */
     li        x2, 0
     bn.lid    x2++, 192(x30)
@@ -282,8 +304,17 @@ scalar_mult_int_p384:
     bn.lid    x2++, 448(x30)
     bn.lid    x2++, 480(x30)
 
+    /* Prepare a mostly-randomized word with LSb matching the MSb of s0 for
+       performing a MSb check on s0 and s1. 
+      
+       N.B. The dummy instruction below serves to separate accesses to w1 and
+       w3, which contain the upper word of s0 and s1 respectively. */
+    bn.wsrr   w8, URND
+    bn.rshi   w7, w8, w1 >> 255
+    bn.rshi   w31, w31, w31  /* dummy instruction to separate accesses */
+
     /* M = s0[511] | s1[511] */
-    bn.or     w8, w1, w3
+    bn.or     w8, w7, w3
 
     /* load q from scratchpad
         Q = ([w9,w8], [w7,w6], [w5,w4]) <= dmem[x26] */
@@ -296,13 +327,14 @@ scalar_mult_int_p384:
     bn.lid    x2++, 160(x26)
 
     /* select either Q or Q_a
-       if M: Q = ([w30,w29], [w28,w27], [w26, w25]) <= Q else: Q <= Q_a */
-    bn.sel    w25, w25, w4, M
-    bn.sel    w26, w26, w5, M
-    bn.sel    w27, w27, w6, M
-    bn.sel    w28, w28, w7, M
-    bn.sel    w29, w29, w8, M
-    bn.sel    w30, w30, w9, M
+       if L: Q = ([w30,w29], [w28,w27], [w26, w25]) <= Q else: Q <= Q_a */
+    bn.sel    w25, w25, w4, L
+    bn.sel    w26, w26, w5, L
+    bn.sel    w27, w27, w6, L
+    bn.sel    w28, w28, w7, L
+    bn.sel    w29, w29, w8, L
+    bn.sel    w30, w30, w9, L
+    bn.or     w31, w31, w31  /* dummy instruction to clear flags */
 
     /* store Q in dmem
      dmem[x26] = dmem[dptr_sc+512] <= [w30:w25] */
@@ -318,8 +350,11 @@ scalar_mult_int_p384:
        s0 <= s0 << 1 ; s1 <= s1 << 1 */
     bn.add    w0, w0, w0
     bn.addc   w1, w1, w1
+    bn.add    w31, w31, w31  /* dummy instruction to clear flags */
     bn.add    w2, w2, w2
     bn.addc   w3, w3, w3
+    bn.add    w31, w31, w31  /* dummy instruction to clear flags */
+
     /* store both shares in scratchpad */
     li        x2, 0
     bn.sid    x2++, 192(x30)

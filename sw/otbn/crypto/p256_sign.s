@@ -136,13 +136,19 @@ p256_sign:
   bn.rshi  w4, w31, w4 >> 129
 
   /* Add 1 to get a 128-bit nonzero scalar for masking.
-       w4 <= w4 + 1 = alpha */
-  bn.addi  w4, w4, 1
+       w4 <= w4 + 1 = alpha 
+
+     N.B. The dummy instruction below serves both to clear flags, whose values
+     will reflect the multiplicative masking value in w4, as well as to separate
+     accesses to this masking value from accesses to the value being masked. */
+  bn.addi   w4,  w4,  1
+  bn.mov    w26, w4
+  bn.addi   w31, w31, 0  /* dummy instruction to clear flags and prevent
+                            possible transient leakage */
 
   /* w0 <= ([w0,w1] * w4) mod n = (k0 * alpha) mod n */
   bn.mov    w24, w0
   bn.mov    w25, w1
-  bn.mov    w26, w4
   jal       x1, mod_mul_320x128
   bn.mov    w0, w19
 

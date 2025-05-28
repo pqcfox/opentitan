@@ -119,8 +119,15 @@ p384_sign:
   bn.rshi   w4, w31, w4 >> 129
 
   /* Add 1 to get a 128-bit nonzero scalar for masking.
-     w4 <= w4 + 1 = alpha */
+     w4 <= w4 + 1 = alpha 
+      
+     N.B. The dummy instruction below serves to clear flags revealing
+     information regarding the masking value in w4, as well as to separate
+     accesses of the multiplicative masking value in w4 from accesses below to
+     the value it masks. */
   bn.addi   w4, w4, 1
+  bn.mov    w16, w4      /* prepare for p384_mulmod488x128_n call below */
+  bn.addi   w31, w31, 0  /* dummy instruction to clear flags */
 
   /* load 1st share k0 from dmem
      [w11,w10] <= k0 = dmem[dptr_k0] */
@@ -128,9 +135,15 @@ p384_sign:
   bn.lid    x2++, 0(x17)
   bn.lid    x2++, 32(x17)
 
-  /* [w26,w25] <= ([w11,w10] * w4) mod n = (k0 * alpha) mod n */
-  bn.mov    w16, w4
+  /* N.B. After the call to p384_mulmod488x128_n below, we immediately move
+     the masking value in w4 back into the (clobbered) w16 so as to separate
+     accesses to w4 from the value it masks ([w11,w10]) below.
+
+     The same pattern repeats below.
+
+     [w26,w25] <= ([w11,w10] * w4) mod n = (k0 * alpha) mod n */
   jal       x1, p384_mulmod448x128_n
+  bn.mov    w16, w4      /* prepare for next p384_mulmod488x128_n call below */ 
   bn.mov    w25, w16
   bn.mov    w26, w17
 
@@ -141,12 +154,10 @@ p384_sign:
   bn.lid    x2++, 32(x19)
 
   /* [w28,w27] <= ([w11,w10] * w4) mod n = (k1 * alpha) mod n */
-  bn.mov    w16, w4
   jal       x1, p384_mulmod448x128_n
+  bn.mov    w16, w4      /* prepare for next p384_mulmod488x128_n call below */ 
   bn.mov    w27, w16
   bn.mov    w28, w17
-
-  /* Multiplicative masking of shares d0 and d1 */
 
   /* load 1st share d0 from dmem
      [w11,w10] <= d0 = dmem[dptr_d0] */
@@ -155,8 +166,8 @@ p384_sign:
   bn.lid    x2++, 32(x4)
 
   /* [w7,w6] <= ([w11,w10] * w4) mod n = (d0 * alpha) mod n */
-  bn.mov    w16, w4
   jal       x1, p384_mulmod448x128_n
+  bn.mov    w16, w4      /* prepare for next p384_mulmod488x128_n call below */
   bn.mov    w6, w16
   bn.mov    w7, w17
 
@@ -167,8 +178,8 @@ p384_sign:
   bn.lid    x2++, 32(x5)
 
   /* [w9,w8] <= ([w11,w10] * w4) mod n = (d1 * alpha) mod n */
-  bn.mov    w16, w4
   jal       x1, p384_mulmod448x128_n
+  bn.mov    w16, w4      /* prepare for next p384_mulmod488x128_n call below */
   bn.mov    w8, w16
   bn.mov    w9, w17
 
@@ -181,7 +192,6 @@ p384_sign:
   bn.lid    x2++, 32(x6)
 
   /* [w1,w0] <= ([w11,w10] * w4) mod n = (msg * alpha) mod n */
-  bn.mov    w16, w4
   jal       x1, p384_mulmod448x128_n
   bn.mov    w0, w16
   bn.mov    w1, w17
@@ -244,6 +254,7 @@ p384_sign:
   bn.subb   w11, w28, w13
   bn.sel    w27, w27, w10, C
   bn.sel    w28, w28, w11, C
+  bn.sub    w31, w31, w31  /* dummy instruction to clear flags */
 
   /* store s of signature in dmem: dmem[dptr_s] <= s = [w28, w27] */
   li        x2, 27
